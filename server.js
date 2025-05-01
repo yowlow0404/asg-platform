@@ -1,5 +1,6 @@
 const express = require("express");
 const session = require("express-session");
+const FileStore = require("session-file-store")(session);
 const bodyParser = require("body-parser");
 const path = require("path");
 const fs = require("fs");
@@ -9,46 +10,66 @@ const app = express();
 const PORT = 8000;
 
 const uploadsDir = path.join(__dirname, "uploads");
+const metadataFilePath = path.join(__dirname, "data", "metadata.json");
 
-// In-memory metadata storage
-const fileMetadata = {};
-
-// Helper function to get uploaded files and their metadata
-function getUploadedFiles(userId) {
-  const files = fs.readdirSync(uploadsDir).map(file => {
-    const metadata = fileMetadata[file] || { owner: userId, sharedTo: [] };
-
-    return {
-      id: file, // Use the file name as the unique ID
-      name: file, // File name stored in the uploads folder
-      size: metadata.size, // File size in bytes
-      type: metadata.type, // File type (extension)
-      owner: metadata.owner, // Owner of the file
-      sharedTo: metadata.sharedTo || [], // Users the file is shared with
-    };
-  });
-
-  // Filter files to show only those owned by or shared with the logged-in user
-  return files.filter(file => file.owner === userId || file.sharedTo.includes(userId));
+// Ensure necessary directories exist
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
 }
+
+const sessionsDir = path.join(__dirname, "sessions");
+if (!fs.existsSync(sessionsDir)) {
+  fs.mkdirSync(sessionsDir);
+}
+
+// Load metadata from file
+function loadMetadata() {
+  try {
+    if (fs.existsSync(metadataFilePath)) {
+      return JSON.parse(fs.readFileSync(metadataFilePath, "utf-8"));
+    }
+  } catch (error) {
+    console.error("Error loading metadata:", error);
+  }
+  return {};
+}
+
+// Save metadata to file
+function saveMetadata() {
+  try {
+    fs.writeFileSync(metadataFilePath, JSON.stringify(fileMetadata, null, 2));
+  } catch (error) {
+    console.error("Error saving metadata:", error);
+  }
+}
+
+// Load metadata into memory
+const fileMetadata = loadMetadata();
 
 // Load users from JSON file
 const users = JSON.parse(fs.readFileSync(path.join(__dirname, "data", "users.json"), "utf-8"));
 
 // Middleware
+app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true })); // For parsing URL-encoded bodies
+app.use(express.json()); // For parsing JSON bodies
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-app.use(session({
-  secret: "your-secret-key",
-  resave: false,
-  saveUninitialized: true,
-}));
+app.use(
+  session({
+    store: new FileStore({ path: sessionsDir }),
+    secret: "your-secret-key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false }, // Set to true if using HTTPS
+  })
+);
 
 // Configure multer for file uploads
 const upload = multer({
-  dest: path.join(__dirname, "uploads"), // Destination folder for uploaded files
+  dest: uploadsDir, // Destination folder for uploaded files
   limits: { fileSize: 10 * 1024 * 1024 }, // Limit file size to 10MB
 });
 
@@ -72,14 +93,14 @@ app.get("/", (req, res) => {
 });
 
 app.get("/login", (req, res) => {
-  res.render("login"); // make login.ejs
+  res.render("login"); // Create login.ejs
 });
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
 
   // Check if the user exists in the JSON file
-  const user = users.find(u => u.username === username && u.password === password);
+  const user = users.find((u) => u.username === username && u.password === password);
 
   if (user) {
     req.session.userId = user.id; // Store the user ID in the session
@@ -96,100 +117,95 @@ app.get("/logout", (req, res) => {
 
 // Route to render the dashboard with uploaded files
 app.get("/dashboard", checkAuth, (req, res) => {
-  const user = users.find(u => u.id === req.session.userId); // Get the logged-in user
-  const files = getUploadedFiles(req.session.userId); // Get files owned by the user
-  res.render("dashboard", { user, files, users }); // Pass the users array to the template
-});
-
-// Route to download a file
-app.get("/download/:id", checkAuth, (req, res) => {
-  const filePath = path.join(uploadsDir, req.params.id);
-  if (fs.existsSync(filePath)) {
-    res.download(filePath);
-  } else {
-    res.status(404).send("File not found");
+  const user = users.find((u) => u.id === req.session.userId);
+  if (!user) {
+    return res.status(400).send("Invalid session. Please log in again.");
   }
+
+  const files = Object.entries(fileMetadata)
+    .filter(([_, metadata]) => metadata.owner === req.session.userId)
+    .map(([id, metadata]) => ({
+      id,
+      name: id,
+      size: metadata.size,
+      type: metadata.type,
+      owner: metadata.owner,
+    }));
+
+  res.render("dashboard", { user, files, users });
 });
 
-// Route to delete a file
-app.post("/delete/:id", checkAuth, (req, res) => {
-  const filePath = path.join(uploadsDir, req.params.id);
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-    delete fileMetadata[req.params.id]; // Remove metadata from memory
-    res.redirect("/dashboard");
-  } else {
-    res.status(404).send("File not found");
-  }
-});
-
-// Route to transfer ownership
-app.post("/transfer/:id", checkAuth, (req, res) => {
-  const { newOwner } = req.body;
-  const fileId = req.params.id;
-
-  // Update file metadata (e.g., owner)
-  const metadata = fileMetadata[fileId];
-  if (metadata) {
-    metadata.owner = newOwner; // Update the owner
-    res.redirect("/dashboard");
-  } else {
-    res.status(404).send("File not found");
-  }
-});
-
-// Route to handle file uploads
+// Route to upload a file
 app.post("/upload", upload.single("file"), (req, res) => {
-  const file = req.file; // File metadata from multer
-  const owner = req.session.userId; // Owner is the logged-in user
+  const file = req.file;
+  const owner = req.session.userId;
 
   if (!file) {
     return res.status(400).send("No file uploaded.");
   }
 
-  // Rename the file to its original name
   const originalName = file.originalname;
   const newFilePath = path.join(uploadsDir, originalName);
-  fs.renameSync(file.path, newFilePath);
 
-  // Save metadata in memory
-  fileMetadata[originalName] = {
-    owner,
-    sharedTo: [],
-    size: file.size,
-    type: path.extname(originalName),
-  };
-
-  console.log("File uploaded:");
-  console.log(`- Name: ${originalName}`);
-  console.log(`- Type: ${file.mimetype}`);
-  console.log(`- Size: ${file.size} bytes`);
-  console.log(`- Owner: ${owner}`);
-
-  // Redirect back to the dashboard
-  res.redirect("/dashboard");
+  try {
+    fs.renameSync(file.path, newFilePath);
+    fileMetadata[originalName] = {
+      owner,
+      size: file.size,
+      type: path.extname(originalName),
+    };
+    saveMetadata();
+    res.redirect("/dashboard");
+  } catch (error) {
+    console.error("Error uploading file:", error);
+    res.status(500).send("Error uploading file.");
+  }
 });
 
-// Route to share a file
-app.post("/share/:id", checkAuth, (req, res) => {
+// Route to transfer ownership
+app.post("/transfer/:id", checkAuth, (req, res) => {
+  const { newOwner } = req.body; // The ID of the new owner
   const fileId = req.params.id;
-  const { sharedTo } = req.body; // Array of user IDs to share with
-  const metadata = fileMetadata[fileId];
 
-  if (metadata) {
-    // Only the owner can share the file
-    if (metadata.owner !== req.session.userId) {
-      return res.status(403).send("You are not authorized to share this file.");
+  try {
+    // Validate the new owner
+    if (!newOwner) {
+      return res.status(400).json({ error: "New owner ID is required." });
     }
 
-    // Update the sharedTo field
-    metadata.sharedTo = Array.isArray(sharedTo) ? sharedTo : [sharedTo];
-    res.redirect("/dashboard");
-  } else {
-    res.status(404).send("File not found.");
+    const userExists = users.find((u) => u.id === newOwner);
+    if (!userExists) {
+      return res.status(400).json({ error: "Invalid user ID." });
+    }
+
+    const metadata = fileMetadata[fileId];
+    if (!metadata) {
+      return res.status(404).json({ error: "File not found." });
+    }
+
+    // Only the current owner can transfer ownership
+    if (metadata.owner !== req.session.userId) {
+      return res.status(403).json({ error: "You are not authorized to transfer this file." });
+    }
+
+    // Transfer ownership
+    metadata.owner = newOwner;
+    saveMetadata();
+
+    res.status(200).json({ message: "File transferred successfully." });
+  } catch (error) {
+    console.error("Error transferring file:", error);
+    res.status(500).json({ error: "An error occurred while transferring the file." });
   }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Unexpected error:", err);
+  res.status(500).send("An unexpected error occurred.");
 });
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
+

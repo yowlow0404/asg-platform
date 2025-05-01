@@ -4,7 +4,6 @@
   <title>Dashboard</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body class="p-4">
   <div class="text-center mb-4">
@@ -18,7 +17,9 @@
     <div class="row">
       <% files.forEach(file => { %>
         <div class="col-md-4 mb-4">
-          <div class="card shadow-sm" style="cursor: pointer;" onclick="showFileActions('<%= file.id %>', '<%= file.name %>', '<%= file.type %>', <%= file.size %>, '<%= file.owner %>', <%= JSON.stringify(file.sharedTo) %>)">
+          <div class="card shadow-sm" 
+               style="cursor: pointer; background-color: white;" 
+               onclick="showFileActions('<%= file.id %>', '<%= file.name %>', '<%= file.type %>', <%= file.size %>, '<%= file.owner %>')">
             <div class="card-body text-center">
               <h5 class="card-title"><%= file.name %></h5>
             </div>
@@ -38,7 +39,7 @@
     <div class="modal-dialog">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title" id="fileActionsModalLabel">File Details</h5>
+          <h5 class="modal-title" id="fileActionsModalLabel">File Actions</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -46,10 +47,7 @@
           <p><strong>File Type:</strong> <span id="fileType"></span></p>
           <p><strong>File Size:</strong> <span id="fileSize"></span></p>
           <p><strong>Owner:</strong> <span id="fileOwner"></span></p>
-          <p><strong>Shared To:</strong> <span id="fileSharedTo"></span></p>
-          <a id="downloadLink" href="#" class="btn btn-success w-100 mb-2">Download</a>
-          <button id="deleteButton" class="btn btn-danger w-100 mb-2">Delete</button>
-          <button id="transferButton" class="btn btn-warning w-100">Transfer Ownership</button>
+          <button class="btn btn-warning w-100" data-bs-toggle="modal" data-bs-target="#transferModal">Transfer Ownership</button>
         </div>
       </div>
     </div>
@@ -90,7 +88,9 @@
               <label for="newOwner" class="form-label">Select New Owner:</label>
               <select name="newOwner" id="newOwner" class="form-select">
                 <% users.forEach(u => { %>
-                  <option value="<%= u.id %>"><%= u.fullName %></option>
+                  <% if (u.id !== user.id) { %> <!-- Exclude the current user -->
+                    <option value="<%= u.id %>"><%= u.fullName %></option>
+                  <% } %>
                 <% }) %>
               </select>
             </div>
@@ -102,34 +102,47 @@
   </div>
 
   <script>
-    function showFileActions(fileId, fileName, fileType, fileSize, fileOwner, fileSharedTo) {
+    function showFileActions(fileId, fileName, fileType, fileSize, fileOwner) {
+      // Populate modal fields with file details
       document.getElementById('fileName').textContent = fileName;
       document.getElementById('fileType').textContent = fileType;
       document.getElementById('fileSize').textContent = (fileSize / 1024).toFixed(2) + ' KB';
       document.getElementById('fileOwner').textContent = fileOwner;
-      document.getElementById('fileSharedTo').textContent = fileSharedTo.length > 0 ? fileSharedTo.join(', ') : 'None';
-      document.getElementById('downloadLink').href = `/download/${fileId}`;
-      document.getElementById('deleteButton').onclick = () => {
-        Swal.fire({
-          title: 'Are you sure?',
-          text: "You won't be able to revert this!",
-          icon: 'warning',
-          showCancelButton: true,
-          confirmButtonColor: '#d33',
-          cancelButtonColor: '#3085d6',
-          confirmButtonText: 'Yes, delete it!'
-        }).then((result) => {
-          if (result.isConfirmed) {
-            fetch(`/delete/${fileId}`, { method: 'POST' }).then(() => {
-              Swal.fire('Deleted!', 'Your file has been deleted.', 'success').then(() => {
-                location.reload();
-              });
-            });
-          }
-        });
-      };
-      new bootstrap.Modal(document.getElementById('fileActionsModal')).show();
+
+      // Set the transfer form action dynamically
+      document.getElementById('transferForm').action = `/transfer/${fileId}`;
+
+      // Show the file actions modal
+      const fileActionsModal = new bootstrap.Modal(document.getElementById('fileActionsModal'));
+      fileActionsModal.show();
     }
+
+    // Handle the transfer form submission
+    document.getElementById('transferForm').onsubmit = function (e) {
+      e.preventDefault(); // Prevent default form submission behavior
+
+      const formData = new FormData(this); // Collect form data
+      const fileId = this.action.split('/').pop(); // Extract file ID from the form action
+
+      // Send the transfer request to the server
+      fetch(`/transfer/${fileId}`, {
+        method: 'POST',
+        body: formData
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error("Failed to transfer the file.");
+          }
+          return response.json();
+        })
+        .then(() => {
+          // Reload the page after a successful transfer
+          location.reload();
+        })
+        .catch(error => {
+          console.error("Error transferring file:", error);
+        });
+    };
   </script>
 </body>
 </html>

@@ -1,0 +1,14 @@
+{
+  "Test_pic.jpg": {
+    "owner": "002",
+    "sharedTo": [],
+    "pendingTransfer": null,
+    "size": 110995,
+    "type": ".jpg"
+  },
+  "Test_ASG.txt": {
+    "owner": "001",
+    "size": 21,
+    "type": ".txt"
+  }
+}
